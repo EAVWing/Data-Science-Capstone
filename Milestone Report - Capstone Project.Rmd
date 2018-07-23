@@ -1,0 +1,331 @@
+---
+title: "Milestone Report - Capstone Project"
+author: "Stephen Ewing"
+date: "July 21, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("C:/Users/Steve/Data-Science-Toolbox/Capstone")
+```
+
+## Introduction
+
+
+## Loading the data
+
+Here's the code to check if the zip file for the project is in the working directory and download it if it isn't.  It will then unzip it if it hasn't already been unzipped.
+```{r Data Download}
+filename <- "Coursera-SwiftKey.zip"
+if(!file.exists(filename)){
+        fileURL <- "https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip"
+        download.file(fileURL, filename)
+}
+if(!dir.exists("/final/en_US/")){
+        unzip(filename)
+}
+```
+
+## Preliminary Analysis
+
+First we'll just look at how long each of the data sets are and some summary stats for the number of characters in the strings.
+```{r Data Exploration, message=FALSE, warning=FALSE, cache=TRUE, comment=""}
+explore <- data.frame(row.names = c("Number of Strings", "Longest String", "Shortest String", "Average String", "Median String", "File Size (mb)"))
+
+con <- file("./final/en_US/en_US.blogs.txt", "r")
+tmp <- readLines(con)
+explore$blogs <- c(length(tmp), max(nchar(tmp)), min(nchar(tmp)), round(mean(nchar(tmp)),0), median(nchar(tmp)), round(file.info("./final/en_US/en_US.blogs.txt")$size / 1024 ^ 2, 0))
+close(con)
+
+con <- file("./final/en_US/en_US.news.txt", "r")
+tmp <- readLines(con)
+explore$news <- c(length(tmp), max(nchar(tmp)), min(nchar(tmp)), round(mean(nchar(tmp)),0), median(nchar(tmp)), round(file.info("./final/en_US/en_US.news.txt")$size / 1024 ^ 2, 0))
+close(con)
+
+con <- file("./final/en_US/en_US.twitter.txt", "r")
+tmp <- readLines(con)
+explore$twitter <- c(length(tmp), max(nchar(tmp)), min(nchar(tmp)), round(mean(nchar(tmp)),0), median(nchar(tmp)), round(file.info("./final/en_US/en_US.twitter.txt")$size / 1024 ^ 2, 0))
+close(con)
+rm(tmp)
+
+explore
+```
+There are many more strings in the twitter data set but the strings are much shorter on average. 550mb of text is a huge data set.
+
+## Data Subsetting
+
+Since we don't need all of the data I'll sample some lines from each source of it using the `LaF` package and move them to a new sub-directory.  
+```{r Load Packages, message=FALSE, warning=FALSE}
+library(NLP)
+library(tm)
+library(LaF)
+```
+```{r Take Samples, cache=TRUE, results=FALSE}
+set.seed(33)
+if(!dir.exists("./sample")){
+        dir.create("./sample")
+}
+sampleSize = 5000
+writeLines(sample_lines("./final/en_US/en_US.blogs.txt", sampleSize, determine_nlines("./final/en_US/en_US.blogs.txt")), "blogsSample.txt")
+file.rename(from="./blogsSample.txt", to="./sample/blogsSample.txt")
+
+writeLines(sample_lines("./final/en_US/en_US.news.txt", sampleSize, determine_nlines("./final/en_US/en_US.news.txt")), "newsSample.txt")
+file.rename(from="./newsSample.txt", to="./sample/newsSample.txt")
+
+writeLines(sample_lines("./final/en_US/en_US.twitter.txt", sampleSize, determine_nlines("./final/en_US/en_US.twitter.txt")), "twitterSample.txt")
+file.rename(from="./twitterSample.txt", to="./sample/twitterSample.txt")
+```
+
+## Preprocessing
+
+Now that we have our sample we can load it into a corpus and start using the `tm` package to clean it up.  
+
+As part of the cleaning process we will do the following:
+
+1.  Use a custom function to remove any non ASCII text
+
+2.  Transform all upper case letters to lower case
+
+3.  Remove the profanity
+
+4.  Remove all punctuation
+
+5.  Remove extra spaces (white space)
+
+6.  Remove numbers
+
+7.  For trigrams and higher I want to have the so called stop words in the algorithm for predictive purposes but we'll take them out of the unigrams and digrams so I'm making a second corpus called stoppedcorp
+
+```{r Get Bad Words, cache=TRUE}
+filename <- "badwords.txt"
+if(!file.exists(filename)){
+        fileURL <- "https://storage.googleapis.com/google-code-archive-downloads/v2/code.google.com/badwordslist/badwords.txt"
+        download.file(fileURL, filename)
+}
+badwords <- read.csv("badwords.txt")
+badwords <- as.character(badwords[,1])
+badwords <- gsub('[])(;:#%$^*\\~{}[&+=@/"`|<>_]+', "", badwords)
+```
+```{r Corp Create, cache=TRUE}
+corp <- Corpus(DirSource("./sample"))
+corp <- tm_map(corp, content_transformer(function(x){return(iconv(x, from = "UTF-8", to = "ASCII", sub = ""))}))
+corp <- tm_map(corp, content_transformer(tolower))
+corp <- tm_map(corp, removeWords, badwords)
+corp <- tm_map(corp, removePunctuation)
+corp <- tm_map(corp, stripWhitespace)
+corp <- tm_map(corp, removeNumbers)
+corpStopped <- tm_map(corp, removeWords, stopwords("SMART"))
+```
+
+## Exploratory Analysis
+
+Now that we have a clean corpus we can start digging into it to see what we see. I'll create a Term Document Matrix using the `tm` package.  
+```{r Create Unigram TDM, cache=TRUE}
+tdm <- removeSparseTerms(TermDocumentMatrix(corpStopped), 0.999)
+```
+
+Load some packages
+```{r Load more packages, message=FALSE, warning=FALSE}
+library(RColorBrewer)
+library(ggplot2)
+library(wordcloud)
+library(data.table)
+library(stringr)
+```
+
+Change the tdm into a matrix object, sort it by the word frequency after summing up the word across the 3 sources and store it as a data frame.
+```{r Create Unigram Data Frame}
+freqTerms <- findFreqTerms(tdm, lowfreq = 5)
+m <- rowSums(as.matrix(tdm[freqTerms,]))
+d1 <- data.frame(unigram = names(m),frequency = m)
+rm(m); rm(freqTerms)
+d1 <- d1[order(-d1$frequency),]
+```
+
+Now we can make a word cloud to visualize the top 100 words.
+```{r Unigram Word Cloud, message=FALSE, warning=FALSE}
+wordcloud(words = d1$unigram, freq = d1$frequency, scale = c(4, 0.5), random.order = FALSE, colors = brewer.pal(9, "Blues"), max.words = 100)
+```
+
+Lets take the top 30 words and plot them as a bar chart to better show their relative frequency.
+```{r Unigram Bar Chart}
+top30 <- d1[1:30,]
+top30$unigram <- factor(top30$unigram, levels = top30$unigram[order(top30$frequency)])
+p <- ggplot(data=top30, aes(y=frequency, x=unigram), ylab="Frequency")
+p <- p + geom_bar(stat="identity", width=1, fill="steelblue", color="blue")
+p <- p + geom_text(aes(label=frequency), color="white", hjust=1.5, size=3)
+p <- p + theme_minimal()
+p <- p + labs(y="Count in the Sample", x="Top 30 Words in the Sample")
+p <- p + coord_flip()
+p
+```
+
+## Tokenization
+
+The `RWeka` package adds the ability to tokenize a corpus into n-grams.  I'll build Term Document Matrices for digrams through quadgrams.
+```{r Make Token TDMs, cache=TRUE}
+library(RWeka)
+biTok <- function(x) NGramTokenizer(x, Weka_control(min = 2, max = 2))
+biTdm <- TermDocumentMatrix(corp, control = list(tokenize = biTok))
+biTdmS <- TermDocumentMatrix(corpStopped, control = list(tokenize = biTok))
+
+triTok <- function(x) NGramTokenizer(x, Weka_control(min = 3, max = 3))
+triTdm <- TermDocumentMatrix(corp, control = list(tokenize = triTok))
+triTdmS <- TermDocumentMatrix(corpStopped, control = list(tokenize = triTok))
+
+fourTok <- function(x) NGramTokenizer(x, Weka_control(min = 4, max = 4))
+fourTdm <- TermDocumentMatrix(corp, control = list(tokenize = fourTok))
+fourTdmS <- TermDocumentMatrix(corpStopped, control = list(tokenize = fourTok))
+```
+
+Now we can do the same matrix conversion we did for the single words to make a frequency list for each of the others and save them so we can use them later.
+```{r Create Other Data Frames}
+freqTerms <- findFreqTerms(biTdm, lowfreq = 3)
+m <- rowSums(as.matrix(biTdm[freqTerms,]))
+d2 <- data.frame(bigram = names(m),frequency = m)
+rm(m); rm(freqTerms)
+d2 <- d2[order(-d2$frequency),]
+
+freqTerms <- findFreqTerms(biTdmS, lowfreq = 3)
+m <- rowSums(as.matrix(biTdmS[freqTerms,]))
+d2S <- data.frame(bigram = names(m),frequency = m)
+rm(m); rm(freqTerms)
+d2S <- d2S[order(-d2S$frequency),]
+
+freqTerms <- findFreqTerms(triTdm, lowfreq = 2)
+m <- rowSums(as.matrix(triTdm[freqTerms,]))
+d3 <- data.frame(trigram = names(m),frequency = m)
+rm(m); rm(freqTerms)
+d3 <- d3[order(-d3$frequency),]
+
+freqTerms <- findFreqTerms(triTdmS, lowfreq = 2)
+m <- rowSums(as.matrix(triTdmS[freqTerms,]))
+d3S <- data.frame(trigram = names(m),frequency = m)
+rm(m); rm(freqTerms)
+d3S <- d3S[order(-d3S$frequency),]
+
+freqTerms <- findFreqTerms(fourTdm, lowfreq = 2)
+m <- rowSums(as.matrix(fourTdm[freqTerms,]))
+d4 <- data.frame(fourgram = names(m),frequency = m)
+rm(m); rm(freqTerms)
+d4 <- d4[order(-d4$frequency),]
+
+freqTerms <- findFreqTerms(fourTdmS, lowfreq = 2)
+m <- rowSums(as.matrix(fourTdmS[freqTerms,]))
+d4S <- data.frame(fourgram = names(m),frequency = m)
+rm(m); rm(freqTerms)
+d4S <- d4S[order(-d4S$frequency),]
+```
+
+Now we can make a word cloud to visualize the top bigrams.
+```{r bigram cloud, message=FALSE, warning=FALSE}
+wordcloud(words = d2S$bigram, freq = d2S$frequency, scale = c(4, 0.5), random.order = FALSE, colors = brewer.pal(9, "Blues"), max.words = 100)
+```
+
+And the top trigrams.
+```{r trigram cloud, message=FALSE, warning=FALSE}
+wordcloud(words = d3$trigram, freq = d3$frequency, scale = c(4, 0.5), random.order = FALSE, colors = brewer.pal(9, "Blues"), max.words = 100)
+```
+
+And the top fourgrams.
+```{r fourgram cloud, message=FALSE, warning=FALSE}
+wordcloud(words = d4$fourgram, freq = d4$frequency, scale = c(4, 0.5), random.order = FALSE, colors = brewer.pal(9, "Blues"), max.words = 100)
+```
+
+Relative frequency of the top 30 bigrams
+```{r bigram bars}
+top30 <- d2S[1:30,]
+top30$bigram <- factor(top30$bigram, levels = top30$bigram[order(top30$frequency)])
+p <- ggplot(data=top30, aes(y=frequency, x=bigram), ylab="Frequency")
+p <- p + geom_bar(stat="identity", width=1, fill="steelblue", color="blue")
+p <- p + geom_text(aes(label=frequency), color="white", hjust=1.5, size=3)
+p <- p + theme_minimal()
+p <- p + labs(y="Count in the Sample", x="Top 30 Bigrams in the Sample")
+p <- p + coord_flip()
+p
+```
+
+Relative frequency of the top 30 trigrams
+```{r trigram bars}
+top30 <- d3[1:30,]
+top30$trigram <- factor(top30$trigram, levels = top30$trigram[order(top30$frequency)])
+p <- ggplot(data=top30, aes(y=frequency, x=trigram), ylab="Frequency")
+p <- p + geom_bar(stat="identity", width=1, fill="steelblue", color="blue")
+p <- p + geom_text(aes(label=frequency), color="white", hjust=1.5, size=3)
+p <- p + theme_minimal()
+p <- p + labs(y="Count in the Sample", x="Top 30 Trigrams in the Sample")
+p <- p + coord_flip()
+p
+```
+
+Relative frequency of the top 30 fourgrams
+```{r fourgram bars}
+top30 <- d4[1:30,]
+top30$fourgram <- factor(top30$fourgram, levels = top30$fourgram[order(top30$frequency)])
+p <- ggplot(data=top30, aes(y=frequency, x=fourgram), ylab="Frequency")
+p <- p + geom_bar(stat="identity", width=1, fill="steelblue", color="blue")
+p <- p + geom_text(aes(label=frequency), color="white", hjust=1.5, size=3)
+p <- p + theme_minimal()
+p <- p + labs(y="Count in the Sample", x="Top 30 Fourgrams in the Sample")
+p <- p + coord_flip()
+p
+```
+
+I'll now save the ngrams with file names that will be easy to use in the prediction script and clean up the environment.
+```{r Save the ngrams}
+rm(corp); rm(corpStopped); rm(top30); rm(p); rm(badwords) 
+
+unigramlist <- setDT(d1)
+rm(d1); rm(tdm)
+save(unigramlist, file="unigram.Rda")
+
+bigramlist <- setDT(d2)
+bigramlist$start <- word(bigramlist$bigram, 1)
+bigramlist$last <- word(bigramlist$bigram, -1)
+rm(d2); rm(biTdm)
+save(bigramlist, file="bigram.Rda")
+
+bigramlist_Stopped <- setDT(d2S)
+bigramlist_Stopped$start <- word(bigramlist_Stopped$bigram, 1)
+bigramlist_Stopped$last <- word(bigramlist_Stopped$bigram, -1)
+rm(d2S); rm(biTdmS)
+save(bigramlist_Stopped, file="bigram_Stopped.Rda")
+
+trigramlist <- setDT(d3)
+trigramlist$start <- word(trigramlist$trigram, 1, 2)
+trigramlist$last <- word(trigramlist$trigram, -1)
+rm(d3); rm(triTdm)
+save(trigramlist, file="trigram.Rda")
+
+trigramlist_Stopped <- setDT(d3S)
+trigramlist_Stopped$start <- word(trigramlist_Stopped$trigram, 1, 2)
+trigramlist_Stopped$last <- word(trigramlist_Stopped$trigram, -1)
+rm(d3S); rm(triTdmS)
+save(trigramlist_Stopped, file="trigram_Stopped.Rda")
+
+fourgramlist <- setDT(d4)
+fourgramlist$start <- word(fourgramlist$fourgram, 1, 3)
+fourgramlist$last <- word(fourgramlist$fourgram, -1)
+rm(d4); rm(fourTdm)
+save(fourgramlist, file="fourgram.Rda")
+
+fourgramlist_Stopped <- setDT(d4S)
+fourgramlist_Stopped$start <- word(fourgramlist_Stopped$fourgram, 1, 3)
+fourgramlist_Stopped$last <- word(fourgramlist_Stopped$fourgram, -1)
+rm(d4S); rm(fourTdmS)
+save(fourgramlist_Stopped, file="fourgram_Stopped.Rda")
+
+bigList <- rbind(fourgramlist_Stopped[,2:4], fourgramlist[,2:4], trigramlist_Stopped[,2:4], trigramlist[,2:4], bigramlist_Stopped[,2:4], bigramlist[,2:4])
+save(bigList, file="bigList.Rda")
+```
+
+## Next Steps
+1.  Create a function that when given a series of words will return the top 5 most likely next words.  I'll probably take each of the frequency lists I just generated and use them to try to match the 6th word from 5 words using the hexagrams, if it doesn't find a match try 4 words with the pentagrams etc.
+
+2.  Test the function on other text samples.  We've only used 5% of the lines in the data set to build our corpus.  If I change the seed I'll be able to generate a new data set to compare against the first.
+
+3.  I'll try out different prediction techniques and find the one that gives the best accuracy/time.
+
+4.  Build a Shiny app that takes input from the user and generates the prediction outcome.
+
